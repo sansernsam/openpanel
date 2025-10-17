@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHmac } from 'crypto';
 import { db, getOrganizationByProjectIdCached } from '@openpanel/db';
 import {
   sendSlackNotification,
@@ -227,6 +228,120 @@ export async function polarWebhook(
     }
 
     throw error;
+  }
+}
+
+// LINE webhook handler
+export async function lineWebhook(
+  request: FastifyRequest<{
+    Body: unknown;
+  }>,
+  reply: FastifyReply,
+) {
+  try {
+    // Verify LINE signature
+    const signature = request.headers['x-line-signature'] as string;
+    const channelSecret = process.env.LINE_CHANNEL_SECRET;
+
+    if (!channelSecret) {
+      request.log.error('LINE_CHANNEL_SECRET not configured');
+      return reply.status(500).send({ error: 'LINE webhook not configured' });
+    }
+
+    if (!signature) {
+      request.log.error('Missing x-line-signature header');
+      return reply.status(401).send({ error: 'Unauthorized' });
+    }
+
+    // Validate signature
+    const body = JSON.stringify(request.body);
+    const hash = createHmac('sha256', channelSecret)
+      .update(body)
+      .digest('base64');
+
+    if (hash !== signature) {
+      request.log.error('Invalid LINE signature');
+      return reply.status(401).send({ error: 'Invalid signature' });
+    }
+
+    // Parse LINE events
+    const lineEventSchema = z.object({
+      events: z.array(
+        z.object({
+          type: z.string(),
+          message: z
+            .object({
+              type: z.string(),
+              id: z.string(),
+              text: z.string().optional(),
+            })
+            .optional(),
+          timestamp: z.number(),
+          source: z.object({
+            type: z.string(),
+            userId: z.string().optional(),
+            groupId: z.string().optional(),
+            roomId: z.string().optional(),
+          }),
+          replyToken: z.string().optional(),
+        }),
+      ),
+      destination: z.string(),
+    });
+
+    const parsedBody = lineEventSchema.safeParse(request.body);
+
+    if (!parsedBody.success) {
+      request.log.error('Invalid LINE webhook payload', {
+        error: parsedBody.error,
+      });
+      return reply.status(400).send({ error: 'Invalid payload' });
+    }
+
+    // Process each event
+    for (const event of parsedBody.data.events) {
+      request.log.info('LINE event received', {
+        type: event.type,
+        userId: event.source.userId,
+      });
+
+      // Handle different event types
+      switch (event.type) {
+        case 'message':
+          if (event.message?.type === 'text') {
+            request.log.info('LINE text message', {
+              text: event.message.text,
+              userId: event.source.userId,
+            });
+            // TODO: Add your message handling logic here
+          }
+          break;
+
+        case 'follow':
+          request.log.info('New LINE follower', {
+            userId: event.source.userId,
+          });
+          // TODO: Add your follow event logic here
+          break;
+
+        case 'unfollow':
+          request.log.info('LINE unfollower', {
+            userId: event.source.userId,
+          });
+          // TODO: Add your unfollow event logic here
+          break;
+
+        default:
+          request.log.info('Unhandled LINE event type', {
+            type: event.type,
+          });
+      }
+    }
+
+    reply.status(200).send('OK');
+  } catch (error) {
+    request.log.error('LINE webhook error', { error });
+    reply.status(500).send({ error: 'Internal server error' });
   }
 }
 

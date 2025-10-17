@@ -15,6 +15,11 @@ const webhookRouter: FastifyPluginCallback = async (fastify) => {
       rawBody: true,
     },
   });
+  fastify.route({
+    method: 'POST',
+    url: '/line',
+    handler: controller.lineWebhook,
+  });
 };
 
 export default webhookRouter;
